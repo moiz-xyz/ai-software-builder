@@ -1,0 +1,63 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: factory
+      POSTGRES_PASSWORD: factory
+      POSTGRES_DB: factory
+    ports: ["5440:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U factory"]
+      interval: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6390:6379"]
+    volumes: [redisdata:/data]
+
+  # S3-compatible object storage (any S3 provider works: AWS S3, R2, Wasabi, MinIO...)
+  s3:
+    image: chrislusf/seaweedfs:3.80
+    command: server -s3 -dir=/data -s3.port=8333 -s3.config=/etc/seaweedfs/s3.json -volume.max=8 -volume.minFreeSpace=500MiB -master.volumeSizeLimitMB=64 -master.volumePreallocate=false
+    volumes:
+      - s3data:/data
+      - ./infra/seaweedfs/s3.json:/etc/seaweedfs/s3.json:ro
+    ports: ["9010:8333"]
+
+  api:
+    build: { context: ., dockerfile: apps/api/Dockerfile }
+    profiles: ["app"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://factory:factory@postgres:5432/factory?schema=public
+      REDIS_URL: redis://redis:6379
+      S3_ENDPOINT: http://s3:8333
+    depends_on: [postgres, redis, s3]
+    ports: ["4100:4100"]
+
+  web:
+    build: { context: ., dockerfile: apps/web/Dockerfile }
+    profiles: ["app"]
+    environment:
+      API_INTERNAL_URL: http://api:4100
+      NEXT_PUBLIC_ROOT_DOMAIN: ${ROOT_DOMAIN:-localtest.me}
+    depends_on: [api]
+    ports: ["3100:3100"]
+
+  nginx:
+    image: nginx:1.27-alpine
+    profiles: ["app"]
+    volumes:
+      - ./infra/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./infra/nginx/certs:/etc/nginx/certs:ro
+      - certbot-www:/var/www/certbot
+    ports: ["80:80", "443:443"]
+    depends_on: [web]
+
+volumes:
+  pgdata:
+  redisdata:
+  s3data:
+  certbot-www:

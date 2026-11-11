@@ -1,0 +1,9 @@
+{
+  "identities": [
+    {
+      "name": "factory",
+      "credentials": [{ "accessKey": "factory", "secretKey": "factory-secret" }],
+      "actions": ["Admin", "Read", "Write", "List", "Tagging"]
+    }
+  ]
+}

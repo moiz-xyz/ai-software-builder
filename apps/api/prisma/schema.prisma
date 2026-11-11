@@ -1,0 +1,342 @@
+// Template-based software factory — multi-tenant schema.
+// Master templates live in Template/TemplateVersion (immutable once published).
+// Every customer project is an isolated tenant: its config, assets, members, roles,
+// business records, domains and deployments all carry projectId.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  CUSTOMER
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+}
+
+enum Category {
+  WEBSITE
+  CRM
+  ERP
+}
+
+enum TemplateStatus {
+  DRAFT
+  PUBLISHED
+  UNPUBLISHED
+  ARCHIVED
+}
+
+enum ProjectStatus {
+  PREVIEW_READY
+  AWAITING_APPROVAL
+  APPROVED
+  PUBLISHING
+  PUBLISHED
+  UNPUBLISHED
+  REJECTED
+}
+
+enum DeploymentStatus {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
+}
+
+enum DomainType {
+  SUBDOMAIN
+  CUSTOM
+}
+
+enum SslStatus {
+  PENDING
+  ACTIVE
+  FAILED
+}
+
+enum Plan {
+  FREE
+  STARTER
+  PRO
+  ENTERPRISE
+}
+
+enum SubscriptionStatus {
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  CANCELLED
+}
+
+model User {
+  id           String        @id @default(cuid())
+  email        String        @unique
+  name         String
+  passwordHash String
+  role         Role          @default(CUSTOMER)
+  status       UserStatus    @default(ACTIVE)
+  company      String?
+  phone        String?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  subscription Subscription?
+  projects     Project[]     @relation("ProjectOwner")
+  memberships  ProjectMember[]
+  assets       Asset[]
+  auditLogs    AuditLog[]
+}
+
+model Subscription {
+  id               String             @id @default(cuid())
+  userId           String             @unique
+  user             User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  plan             Plan               @default(FREE)
+  status           SubscriptionStatus @default(TRIALING)
+  currentPeriodEnd DateTime?
+  notes            String?
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+}
+
+model Theme {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  name      String
+  tokens    Json
+  builtIn   Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Module {
+  id          String   @id @default(cuid())
+  key         String   @unique
+  name        String
+  category    String
+  description String
+  entities    Json
+  builtIn     Boolean  @default(false)
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+/// Master template. `draft` is the editable working copy; published snapshots are TemplateVersions.
+model Template {
+  id               String            @id @default(cuid())
+  key              String            @unique
+  name             String
+  category         Category
+  description      String
+  previewImages    String[]
+  status           TemplateStatus    @default(DRAFT)
+  draft            Json
+  draftUpdatedAt   DateTime          @default(now())
+  currentVersionId String?           @unique
+  currentVersion   TemplateVersion?  @relation("CurrentVersion", fields: [currentVersionId], references: [id])
+  versions         TemplateVersion[] @relation("Versions")
+  projects         Project[]
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+}
+
+/// Immutable snapshot of a template definition. Projects pin the version they were created from.
+model TemplateVersion {
+  id          String    @id @default(cuid())
+  templateId  String
+  template    Template  @relation("Versions", fields: [templateId], references: [id], onDelete: Cascade)
+  version     String
+  definition  Json
+  changelog   String?
+  createdAt   DateTime  @default(now())
+  currentOf   Template? @relation("CurrentVersion")
+  projects    Project[]
+
+  @@unique([templateId, version])
+}
+
+model Project {
+  id                 String                 @id @default(cuid())
+  ownerId            String
+  owner              User                   @relation("ProjectOwner", fields: [ownerId], references: [id])
+  name               String
+  slug               String                 @unique
+  category           Category
+  templateId         String
+  template           Template               @relation(fields: [templateId], references: [id])
+  templateVersionId  String
+  templateVersion    TemplateVersion        @relation(fields: [templateVersionId], references: [id])
+  status             ProjectStatus          @default(PREVIEW_READY)
+  /// Raw requirement-form answers exactly as submitted (for admin inspection).
+  requirements       Json
+  /// Free-text instructions from the customer — stored for the admin, never interpreted.
+  customerNotes      String?
+  /// Business description typed into the Instant Builder (kept so admins can review what the rules understood).
+  sourcePrompt       String?
+  adminNotes         String?
+  /// Current working (draft) configuration.
+  config             Json
+  configVersion      Int                    @default(1)
+  /// Snapshot that is served on the live site / workspace branding once published.
+  publishedConfig    Json?
+  publishedVersion   Int?
+  previewToken       String                 @unique
+  approvedAt         DateTime?
+  publishedAt        DateTime?
+  provisionedAt      DateTime?
+  rejectionReason    String?
+  createdAt          DateTime               @default(now())
+  updatedAt          DateTime               @updatedAt
+  configVersions     ProjectConfigVersion[]
+  assets             Asset[]
+  members            ProjectMember[]
+  roles              ProjectRole[]
+  records            WorkspaceRecord[]
+  domains            Domain[]
+  deployments        Deployment[]
+
+  @@index([ownerId])
+}
+
+model ProjectConfigVersion {
+  id          String   @id @default(cuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  version     Int
+  config      Json
+  message     String?
+  createdById String?
+  createdAt   DateTime @default(now())
+
+  @@unique([projectId, version])
+}
+
+model Asset {
+  id           String   @id @default(cuid())
+  ownerId      String
+  owner        User     @relation(fields: [ownerId], references: [id])
+  /// null = staging upload (wizard, before the project exists) or template asset.
+  projectId    String?
+  project      Project? @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  templateId   String?
+  kind         String   @default("image")
+  key          String   @unique
+  url          String
+  mimeType     String
+  size         Int
+  originalName String
+  createdAt    DateTime @default(now())
+
+  @@index([projectId])
+  @@index([ownerId])
+}
+
+model ProjectRole {
+  id          String          @id @default(cuid())
+  projectId   String
+  project     Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  key         String
+  name        String
+  permissions String[]
+  members     ProjectMember[]
+
+  @@unique([projectId, key])
+}
+
+model ProjectMember {
+  id        String      @id @default(cuid())
+  projectId String
+  project   Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  roleId    String
+  role      ProjectRole @relation(fields: [roleId], references: [id])
+  createdAt DateTime    @default(now())
+
+  @@unique([projectId, userId])
+}
+
+/// Business data for CRM / ERP workspaces and website form submissions. Always scoped by projectId.
+model WorkspaceRecord {
+  id          String   @id @default(cuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  module      String
+  entity      String
+  data        Json
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([projectId, entity])
+}
+
+model Domain {
+  id                String     @id @default(cuid())
+  projectId         String
+  project           Project    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  hostname          String     @unique
+  type              DomainType
+  verified          Boolean    @default(false)
+  verificationToken String
+  sslStatus         SslStatus  @default(PENDING)
+  lastCheckedAt     DateTime?
+  createdAt         DateTime   @default(now())
+}
+
+model Deployment {
+  id            String           @id @default(cuid())
+  projectId     String
+  project       Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  configVersion Int
+  status        DeploymentStatus @default(QUEUED)
+  log           String[]
+  triggeredById String?
+  createdAt     DateTime         @default(now())
+  startedAt     DateTime?
+  finishedAt    DateTime?
+
+  @@index([projectId])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorId    String?
+  actor      User?    @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  action     String
+  entityType String
+  entityId   String?
+  meta       Json?
+  createdAt  DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([createdAt])
+}
+
+/// Shared photo library used by the Instant Builder. Photos are copied into a project when it is
+/// created, so removing or editing a library photo never changes an existing customer site.
+model StockImage {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  url       String
+  tags      String[]
+  title     String   @default("")
+  creator   String   @default("")
+  license   String   @default("")
+  sourceUrl String   @default("")
+  width     Int      @default(0)
+  height    Int      @default(0)
+  size      Int      @default(0)
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}

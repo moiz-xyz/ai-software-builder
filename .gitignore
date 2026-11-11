@@ -1,0 +1,23 @@
+node_modules
+dist
+.next
+.env
+.env.local
+*.log
+coverage
+.turbo
+apps/api/uploads
+
+# secrets & local env
+.env.*
+!.env.example
+*.pem
+*.key
+infra/nginx/certs/
+
+# build / tooling
+*.tsbuildinfo
+next-env.d.ts
+.DS_Store
+.idea
+.vscode
